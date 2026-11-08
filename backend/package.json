@@ -1,0 +1,23 @@
+{
+  "name": "backend",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "typecheck": "bun check",
+    "contract:emit": "prisma contract emit"
+  },
+  "devDependencies": {
+    "@prisma/cli-engine": "0.9.0",
+    "@types/bun": "latest",
+    "@types/node": "^26.6.6",
+    "prisma": "^8.0.0-rc.33"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  },
+  "dependencies": {
+    "@prisma/orm-postgres": "^8.0.0-rc.23",
+    "dotenv": "^18.0.9"
+  }
+}

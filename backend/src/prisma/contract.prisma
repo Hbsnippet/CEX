@@ -1,0 +1,41 @@
+// use prisma-8
+
+
+model User {
+  id Int @id @default(autoincrement())
+  username String @unique
+  password String @unique
+}
+
+model Order {
+  id Int @id @default(autoincrement())
+  userId Int
+  user User @relation(fields: [userId], references: [id])
+  side String // BUY or SELL
+  stockId Int
+  stock Stock @relation(fields: [stockId], references: [id])
+  price Decimal
+  quantity Int
+  filledQty Int
+  status String // OPEN, FILLED, CANCELLED
+}
+
+model Fill {
+  id Int @id @default(autoincrement())
+  stockId Int
+  stock Stock @relation(fields: [stockId], references: [id])
+  price Decimal
+  quantity Int
+  buyOrderId Int
+  buyOrder Order @relation(fields: [buyOrderId], references: [id])
+  sellOrderId Int
+  sellOrder Order @relation(fields: [sellOrderId], references: [id])
+  timestamp DateTime @default(now())
+}
+
+model Stock {
+  id Int @id @default(autoincrement())
+  title String
+  symbol String @unique
+}
+
