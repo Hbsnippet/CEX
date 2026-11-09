@@ -1,4 +1,4 @@
-import express from "express";
+import express from 'express';
 const app = express();
 app.use(express.json());
 
@@ -8,10 +8,10 @@ app.use(express.json());
 // gets validated, then becomes a strict domain type.
 // ============================================================
 
-type StockSymbol = "AXIS" | "HDFC" | "TATA";
-type Side = "BUY" | "SELL";
-type OrderType = "LIMIT" | "MARKET";
-type OrderStatus = "OPEN" | "FILLED" | "PARTIAL" | "CANCELLED";
+type StockSymbol = 'AXIS' | 'HDFC' | 'TATA';
+type Side = 'BUY' | 'SELL';
+type OrderType = 'LIMIT' | 'MARKET';
+type OrderStatus = 'OPEN' | 'FILLED' | 'PARTIAL' | 'CANCELLED';
 
 type User = { id: number; username: string; password: string };
 type Stock = { id: number; title: string; symbol: StockSymbol };
@@ -51,12 +51,12 @@ type Fill = {
 // What the client actually sends — untrusted, so everything optional.
 // Validate it, THEN construct a real `Order`.
 type OrderRequestInput = {
-  userId?: number | string;
+  userId: number;
   side?: string;
   type?: string;
   symbol?: string;
-  price?: number | string;
-  qty?: number | string;
+  price?: number;
+  qty?: number;
 };
 
 // ============================================================
@@ -64,14 +64,14 @@ type OrderRequestInput = {
 // ============================================================
 
 const USERS: User[] = [
-  { id: 1, username: "admin", password: "admin" },
-  { id: 2, username: "user", password: "user" },
+  { id: 1, username: 'admin', password: 'admin' },
+  { id: 2, username: 'user', password: 'user' },
 ];
 
 const STOCKS: Stock[] = [
-  { id: 1, title: "AXIS BANK", symbol: "AXIS" },
-  { id: 2, title: "HDFC BANK", symbol: "HDFC" },
-  { id: 3, title: "TATA Steel", symbol: "TATA" },
+  { id: 1, title: 'AXIS BANK', symbol: 'AXIS' },
+  { id: 2, title: 'HDFC BANK', symbol: 'HDFC' },
+  { id: 3, title: 'TATA Steel', symbol: 'TATA' },
 ];
 
 const ORDERS: Order[] = [];
@@ -79,8 +79,14 @@ const FILLS: Fill[] = [];
 
 // { userId: { INR: Balance, AXIS?: Balance, ... } }
 const BALANCES: Record<number, Account> = {
-  1: { INR: { available: 100000, locked: 5000 }, AXIS: { available: 100, locked: 0 } },
-  2: { INR: { available: 50000, locked: 0 }, AXIS: { available: 50, locked: 20 } },
+  1: {
+    INR: { available: 100000, locked: 5000 },
+    AXIS: { available: 100, locked: 0 },
+  },
+  2: {
+    INR: { available: 50000, locked: 0 },
+    AXIS: { available: 50, locked: 20 },
+  },
 };
 
 const ORDERBOOK: Record<StockSymbol, OrderBook> = {
@@ -96,13 +102,13 @@ let nextFillId = 1;
 const seedOrder: Order = {
   id: nextOrderId++,
   userId: 2,
-  side: "SELL",
-  type: "LIMIT",
-  symbol: "AXIS",
+  side: 'SELL',
+  type: 'LIMIT',
+  symbol: 'AXIS',
   price: 1500,
   qty: 10,
   filledQty: 0,
-  status: "OPEN",
+  status: 'OPEN',
   createdAt: Date.now(),
 };
 ORDERS.push(seedOrder);
@@ -110,23 +116,8 @@ ORDERBOOK.AXIS.asks[1500] = [
   { orderId: seedOrder.id, userId: seedOrder.userId, qty: seedOrder.qty },
 ];
 
-// ============================================================
-// HELPERS — you write these. Suggested signatures:
-//
-//   function lockForOrde1r(order: Order, acc: Account): string | null
-//     -> moves available -> locked, returns error message or null
-//
-//   function matchOrder(order: Order): Fill[]
-//     -> walks ORDERBOOK[order.symbol] opposite side, best price first,
-//        mutates orders/book/balances, returns the fills it created
-//
-//   function restOnBook(order: Order, qty: number): void
-//   function cancelRemainder(order: Order, qty: number): void
-//     -> releases the leftover lock (available += , locked -=)
-// ============================================================
-
 // --- Auth ---
-app.post("/signup", (req, res) => {
+app.post('/signup', (req, res) => {
   // const { username, password } = req.body as { username?: string; password?: string };
   // 1. check username not taken
   // 2. hash password (bcrypt/argon2)
@@ -134,54 +125,214 @@ app.post("/signup", (req, res) => {
   // 4. init BALANCES[userId] with INR: { available: 0, locked: 0 }
 });
 
-app.post("/login", (req, res) => {
+app.post('/login', (req, res) => {
   // 1. find user by username
   // 2. compare hashed password
   // 3. return JWT / session token
 });
 
 // --- Orders ---
-app.post("/order", (req, res) => {
-  // body: OrderRequestInput
-  // 1. validate input + stock exists  -> narrow to { userId, side, type, symbol, price?, qty }
-  // 2. check + lock balance (INR for BUY, stock for SELL)
-  // 3. run matching engine against opposite side of ORDERBOOK
-  // 4. write fills to FILLS, update filledQty + status on ORDERS
-  // 5. if leftover qty and LIMIT, rest on book; if MARKET, cancel remainder
-  // 6. settle balances on each fill (move locked -> other asset's available)
+app.post('/order', (req: { body: OrderRequestInput }, res) => {
+  const userId = Number(req.body.userId);
+  const qty = Number(req.body.qty);
+  const side = req.body.side;
+  const type = req.body.type;
+  const symbol = req.body.symbol as 'AXIS' | 'HDFC' | 'TATA' | undefined;
+  const price =
+    req.body.price !== undefined ? Number(req.body.price) : undefined;
+
+  if (
+    !userId ||
+    !qty ||
+    qty <= 0 ||
+    !side ||
+    !type ||
+    !symbol ||
+    !BALANCES[userId] ||
+    !ORDERBOOK[symbol] ||
+    (type === 'LIMIT' && !price) ||
+    price === undefined
+  ) {
+    return res.status(400).json({ error: 'Invalid input' });
+  }
+
+  const bal = BALANCES[userId];
+  if (!bal) {
+    return res.status(400).json({ error: 'Invalid user' });
+  }
+
+  // Lock
+
+  if (side === 'BUY') {
+    const required = price * qty;
+    if (bal.INR.available < required) {
+      return res.status(400).json({ error: 'Insufficient balance' });
+    }
+    bal.INR.available -= required;
+    bal.INR.locked += required;
+  } else {
+    if (!bal[symbol] || bal[symbol].available < qty) {
+      return res.status(400).json({ error: 'Insufficient balance' });
+    }
+    bal[symbol].available -= qty;
+    bal[symbol].locked += qty;
+  }
+
+  // create Order
+
+  const order: Order = {
+    id: nextOrderId++,
+    userId,
+    side: side as Side,
+    type: type as OrderType,
+    symbol,
+    price,
+    qty,
+    filledQty: 0,
+    status: 'OPEN',
+    createdAt: Date.now(),
+  };
+
+  ORDERS.push(order);
+
+  let remainingQty = qty;
+  const fills: Fill[] = [];
+
+  // Matching logic would be here
+
+  const opposite =
+    side === 'BUY' ? ORDERBOOK[symbol].asks : ORDERBOOK[symbol].bids;
+  const level = opposite[price];
+
+  if (level && level.length > 0) {
+    const resting = level[0]!;
+    const fillQty = Math.min(remainingQty, resting.qty);
+
+    if (fillQty > 0) {
+      fills.push({
+        id: nextFillId++,
+        buyOrderId: side === 'BUY' ? order.id : resting.orderId,
+        sellOrderId: side === 'BUY' ? resting.orderId : order.id,
+        symbol,
+        price,
+        qty: fillQty,
+        ts: Date.now(),
+      });
+    }
+
+    order.filledQty += fillQty;
+    resting.qty -= fillQty;
+    remainingQty -= fillQty;
+
+    const tradeValue = fillQty * price;
+
+    if (side === 'BUY') {
+      bal.INR.locked -= tradeValue;
+      if (!bal[symbol]) bal[symbol] = { available: 0, locked: 0 };
+      bal[symbol].available += fillQty;
+
+      const seller = BALANCES[resting.userId];
+      if (seller) {
+        seller.INR.available += tradeValue;
+        if (seller[symbol]) {
+          seller[symbol].locked -= fillQty;
+        }
+      }
+    } else {
+      if (bal[symbol]) bal[symbol].locked -= fillQty;
+      bal.INR.available += tradeValue;
+
+      const buyer = BALANCES[resting.userId];
+      if (buyer) {
+        buyer.INR.locked -= tradeValue;
+        if (!buyer[symbol]) buyer[symbol] = { available: 0, locked: 0 };
+        buyer[symbol].available += fillQty;
+      }
+    }
+
+    if (resting.qty <= 0) {
+      level.shift();
+      if (level.length === 0) {
+        delete opposite[price];
+      }
+    }
+  }
+
+  if (remainingQty > 0 && type === 'LIMIT') {
+    const myside =
+      side === 'BUY' ? ORDERBOOK[symbol].bids : ORDERBOOK[symbol].asks;
+    // TODO: add to orderbook
+    if (!myside[price]) myside[price] = [];
+    myside[price].push({
+      orderId: order.id,
+      userId: order.userId,
+      qty: remainingQty,
+    });
+  } else if (remainingQty > 0) {
+    if (side === 'BUY') {
+      bal.INR.locked -= remainingQty * price;
+      bal.INR.available += remainingQty * price;
+    } else if (bal[symbol]) {
+      bal[symbol].locked -= remainingQty;
+      bal[symbol].available += remainingQty;
+    }
+
+    order.status = 'CANCELLED';
+  }
+
+  if (order.filledQty === order.qty) {
+    order.status = 'FILLED';
+  } else if (order.filledQty > 0) {
+    order.status = 'PARTIAL';
+  }
+
+  res.json({ order, fills });
 });
 
-app.delete("/order/:orderId", (req, res) => {
-  // 1. find order, check ownership
+// body: OrderRequestInput
+// 1. validate input + stock exists  -> narrow to { userId, side, type, symbol, price?, qty }
+// 2. check + lock balance (INR for BUY, stock for SELL)
+// 3. run matching engine against opposite side of ORDERBOOK
+// 4. write fills to FILLS, update filledQty + status on ORDERS
+// 5. if leftover qty and LIMIT, rest on book; if MARKET, cancel remainder
+// 6. settle balances on each fill (move locked -> other asset's available)
+
+app.delete('/order/:orderId', (req, res) => {
+  // 1. find order, check ownership1
   // 2. remove from ORDERBOOK price level
   // 3. unlock remaining reserved balance
   // 4. mark status = CANCELLED
 });
 
-app.get("/orders", (req, res) => {
+app.get('/orders', (req, res) => {
   // query: ?status=OPEN&userId=1  (or all)
   // return current user's orders — filter ORDERS, then res.json(...)
+  res.json(ORDERS);
 });
 
 // --- Market data ---
-app.get("/orderbook/:symbol", (req, res) => {
+app.get('/orderbook/:symbol', (req, res) => {
   // return aggregated depth — totalQty per price level for bids and asks
   // (don't expose individual userIds to other users)
+  const symbol = req.params.symbol as StockSymbol;
+  res.json(ORDERBOOK[symbol] ?? {});
 });
 
-app.get("/fills/:symbol", (req, res) => {
+app.get('/fills/:symbol', (req, res) => {
   // recent trades for this stock — the "tape"
 });
 
-app.get("/stocks", (req, res) => {
+app.get('/stocks', (req, res) => {
   // res.json(STOCKS)
 });
 
 // --- User data ---
-app.get("/balance", (req, res) => {
+app.get('/balance', (req, res) => {
   // return BALANCES[userId] for the authed user
+  const userId = Number(req.query.userId);
+  res.json(BALANCES[userId] ?? { error: 'no user' });
 });
 
 app.listen(3000, () => {
-  console.log("Server is running on port 3000");
+  console.log('Server is running on port 3000');
 });
