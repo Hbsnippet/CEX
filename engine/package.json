@@ -11,5 +11,8 @@
   },
   "peerDependencies": {
     "typescript": "^7"
+  },
+  "dependencies": {
+    "redis": "^6.3.1"
   }
 }

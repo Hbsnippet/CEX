@@ -1,332 +1,37 @@
 import express from 'express';
+import { createClient } from 'redis';
 const app = express();
 app.use(express.json());
 
-// ============================================================
-// TYPES — read GUIDE.md before touching logic.
-// Rule: data crosses a boundary as `unknown`/loose input,
-// gets validated, then becomes a strict domain type.
-// ============================================================
-
-type StockSymbol = 'AXIS' | 'HDFC' | 'TATA';
-type Side = 'BUY' | 'SELL';
-type OrderType = 'LIMIT' | 'MARKET';
-type OrderStatus = 'OPEN' | 'FILLED' | 'PARTIAL' | 'CANCELLED';
-
-type User = { id: number; username: string; password: string };
-type Stock = { id: number; title: string; symbol: StockSymbol };
-
-type Balance = { available: number; locked: number };
-// Every account MUST have INR; stock balances only exist once held.
-type Account = { INR: Balance } & { [K in StockSymbol]?: Balance };
-
-// Order book: symbol -> side -> price -> queue of resting orders
-type BookLevel = { orderId: number; userId: number; qty: number };
-type PriceLevelMap = Record<number, BookLevel[]>;
-type OrderBook = { bids: PriceLevelMap; asks: PriceLevelMap };
-
-type Order = {
-  id: number;
-  userId: number;
-  side: Side;
-  type: OrderType;
-  symbol: StockSymbol;
-  price?: number; // LIMIT: required. MARKET BUY: max acceptable price.
-  qty: number;
-  filledQty: number;
-  status: OrderStatus;
-  createdAt: number;
-};
-
-type Fill = {
-  id: number;
-  buyOrderId: number;
-  sellOrderId: number;
-  symbol: StockSymbol;
-  price: number;
-  qty: number;
-  ts: number;
-};
-
-// What the client actually sends — untrusted, so everything optional.
-// Validate it, THEN construct a real `Order`.
-type OrderRequestInput = {
-  userId: number;
-  side?: string;
-  type?: string;
-  symbol?: string;
-  price?: number;
-  qty?: number;
-};
-
-// ============================================================
-// DATA
-// ============================================================
-
-const USERS: User[] = [
-  { id: 1, username: 'admin', password: 'admin' },
-  { id: 2, username: 'user', password: 'user' },
-];
-
-const STOCKS: Stock[] = [
-  { id: 1, title: 'AXIS BANK', symbol: 'AXIS' },
-  { id: 2, title: 'HDFC BANK', symbol: 'HDFC' },
-  { id: 3, title: 'TATA Steel', symbol: 'TATA' },
-];
-
-const ORDERS: Order[] = [];
-const FILLS: Fill[] = [];
-
-// { userId: { INR: Balance, AXIS?: Balance, ... } }
-const BALANCES: Record<number, Account> = {
-  1: {
-    INR: { available: 100000, locked: 5000 },
-    AXIS: { available: 100, locked: 0 },
-  },
-  2: {
-    INR: { available: 50000, locked: 0 },
-    AXIS: { available: 50, locked: 20 },
-  },
-};
-
-const ORDERBOOK: Record<StockSymbol, OrderBook> = {
-  AXIS: { bids: {}, asks: {} },
-  HDFC: { bids: {}, asks: {} },
-  TATA: { bids: {}, asks: {} },
-};
-
-// Seed order proves the types compile — replace ids with your own scheme.
-let nextOrderId = 1;
-let nextFillId = 1;
-
-// after let nextOrderId = 1; nextFillId = 1;
-
-// seed 1
-const o1: Order = {
-  id: nextOrderId++,
-  userId: 2,
-  side: 'SELL',
-  type: 'LIMIT',
-  symbol: 'AXIS',
-  price: 1500,
-  qty: 4,
-  filledQty: 0,
-  status: 'OPEN',
-  createdAt: Date.now(),
-};
-ORDERS.push(o1);
-ORDERBOOK.AXIS.asks[1500] = [{ orderId: o1.id, userId: 2, qty: 4 }];
-
-// seed 2
-const o2: Order = {
-  id: nextOrderId++,
-  userId: 2,
-  side: 'SELL',
-  type: 'LIMIT',
-  symbol: 'AXIS',
-  price: 1510,
-  qty: 6,
-  filledQty: 0,
-  status: 'OPEN',
-  createdAt: Date.now(),
-};
-ORDERS.push(o2);
-ORDERBOOK.AXIS.asks[1510] = [{ orderId: o2.id, userId: 2, qty: 6 }];
-
-// --- Auth ---
-app.post('/signup', (req, res) => {
-  // const { username, password } = req.body as { username?: string; password?: string };
-  // 1. check username not taken
-  // 2. hash password (bcrypt/argon2)
-  // 3. push to USERS
-  // 4. init BALANCES[userId] with INR: { available: 0, locked: 0 }
+const redis = createClient({
+  url: 'redis://localhost:6379',
 });
-
-app.post('/login', (req, res) => {
-  // 1. find user by username
-  // 2. compare hashed password
-  // 3. return JWT / session token
-});
+await redis.connect();
 
 // --- Orders ---
-app.post('/order', (req: { body: OrderRequestInput }, res) => {
-  const userId = Number(req.body.userId);
-  const qty = Number(req.body.qty);
-  const side = req.body.side;
-  const type = req.body.type;
-  const symbol = req.body.symbol as 'AXIS' | 'HDFC' | 'TATA' | undefined;
-  const price =
-    req.body.price !== undefined ? Number(req.body.price) : undefined;
+app.post('/order', async (req, res) => {
+  const { userId, qty, side, type, symbol, price } = req.body;
 
-  if (
-    !userId ||
-    !qty ||
-    qty <= 0 ||
-    !side ||
-    !type ||
-    !symbol ||
-    !BALANCES[userId] ||
-    !ORDERBOOK[symbol] ||
-    (type === 'LIMIT' && !price) ||
-    price === undefined
-  ) {
-    return res.status(400).json({ error: 'Invalid input' });
+  if (!userId || !side || !type || !symbol || !qty || qty <= 0) {
+    return res.status(400).json({ error: 'missing fields' });
+  }
+  if (type === 'LIMIT' && !price) {
+    return res.status(400).json({ error: 'price required for LIMIT' });
   }
 
-  const bal = BALANCES[userId];
-  if (!bal) {
-    return res.status(400).json({ error: 'Invalid user' });
-  }
+  await redis.lPush(
+    'incoming-orders',
+    JSON.stringify({
+      userId,
+      qty,
+      side,
+      type,
+      symbol,
+      price,
+    })
+  );
 
-  // Lock
-
-  if (side === 'BUY') {
-    const required = price * qty;
-    if (bal.INR.available < required) {
-      return res.status(400).json({ error: 'Insufficient balance' });
-    }
-    bal.INR.available -= required;
-    bal.INR.locked += required;
-  } else {
-    if (!bal[symbol] || bal[symbol].available < qty) {
-      return res.status(400).json({ error: 'Insufficient balance' });
-    }
-    bal[symbol].available -= qty;
-    bal[symbol].locked += qty;
-  }
-
-  // create Order
-
-  const order: Order = {
-    id: nextOrderId++,
-    userId,
-    side: side as Side,
-    type: type as OrderType,
-    symbol,
-    price,
-    qty,
-    filledQty: 0,
-    status: 'OPEN',
-    createdAt: Date.now(),
-  };
-
-  ORDERS.push(order);
-
-  let remainingQty = qty;
-  const fills: Fill[] = [];
-
-  // Matching logic would be here
-
-  const opposite =
-    side === 'BUY' ? ORDERBOOK[symbol].asks : ORDERBOOK[symbol].bids;
-
-  // sort prices: lowest first for BUY, highest first for SELL
-  const prices = Object.keys(opposite)
-    .map(Number)
-    .sort((a, b) => (side === 'BUY' ? a - b : b - a));
-
-  for (const levelPrice of prices) {
-    if (remainingQty <= 0) break;
-
-    // stop if price is worse than limit
-    if (type === 'LIMIT') {
-      if (side === 'BUY' && levelPrice > price) break;
-      if (side === 'SELL' && levelPrice < price) break;
-    }
-
-    const level = opposite[levelPrice];
-    if (!level) continue;
-
-    while (level.length > 0 && remainingQty > 0) {
-      const resting = level[0];
-      if (!resting) break;
-
-      const fillQty = Math.min(remainingQty, resting.qty);
-      if (fillQty <= 0) break;
-
-      // fill record
-      fills.push({
-        id: nextFillId++,
-        buyOrderId: side === 'BUY' ? order.id : resting.orderId,
-        sellOrderId: side === 'BUY' ? resting.orderId : order.id,
-        symbol,
-        price: levelPrice,
-        qty: fillQty,
-        ts: Date.now(),
-      });
-
-      // update quantities
-      order.filledQty += fillQty;
-      resting.qty -= fillQty;
-      remainingQty -= fillQty;
-
-      // also update the resting order inside ORDERS array
-      const restingOrder = ORDERS.find((o) => o.id === resting.orderId);
-      if (restingOrder) restingOrder.filledQty += fillQty;
-
-      const tradeValue = fillQty * levelPrice;
-
-      if (side === 'BUY') {
-        bal.INR.locked -= tradeValue;
-        if (!bal[symbol]) bal[symbol] = { available: 0, locked: 0 };
-        bal[symbol].available += fillQty;
-
-        const seller = BALANCES[resting.userId];
-        if (seller) {
-          seller.INR.available += tradeValue;
-          if (seller[symbol]) seller[symbol].locked -= fillQty;
-        }
-      } else {
-        if (bal[symbol]) bal[symbol].locked -= fillQty;
-        bal.INR.available += tradeValue;
-
-        const buyer = BALANCES[resting.userId];
-        if (buyer) {
-          buyer.INR.locked -= tradeValue;
-          if (!buyer[symbol]) buyer[symbol] = { available: 0, locked: 0 };
-          buyer[symbol].available += fillQty;
-        }
-      }
-
-      if (resting.qty <= 0) {
-        level.shift();
-      }
-    }
-
-    if (level.length === 0) {
-      delete opposite[levelPrice];
-    }
-  }
-
-  if (remainingQty > 0 && type === 'LIMIT') {
-    const myside =
-      side === 'BUY' ? ORDERBOOK[symbol].bids : ORDERBOOK[symbol].asks;
-    // TODO: add to orderbook
-    if (!myside[price]) myside[price] = [];
-    myside[price].push({
-      orderId: order.id,
-      userId: order.userId,
-      qty: remainingQty,
-    });
-  } else if (remainingQty > 0) {
-    if (side === 'BUY') {
-      bal.INR.locked -= remainingQty * price;
-      bal.INR.available += remainingQty * price;
-    } else if (bal[symbol]) {
-      bal[symbol].locked -= remainingQty;
-      bal[symbol].available += remainingQty;
-    }
-
-    order.status = 'CANCELLED';
-  }
-
-  if (order.filledQty === order.qty) {
-    order.status = 'FILLED';
-  } else if (order.filledQty > 0) {
-    order.status = 'PARTIAL';
-  }
-
-  res.json({ order, fills });
+  res.json({ status: 'queued' });
 });
 
 // body: OrderRequestInput
