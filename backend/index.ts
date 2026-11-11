@@ -200,31 +200,54 @@ app.post('/order', (req: { body: OrderRequestInput }, res) => {
 
   // Matching logic would be here
 
-  const opposite =
-    side === 'BUY' ? ORDERBOOK[symbol].asks : ORDERBOOK[symbol].bids;
-  const level = opposite[price];
+const opposite =
+  side === 'BUY' ? ORDERBOOK[symbol].asks : ORDERBOOK[symbol].bids;
 
-  if (level && level.length > 0) {
-    const resting = level[0]!;
+// sort prices: lowest first for BUY, highest first for SELL
+const prices = Object.keys(opposite)
+  .map(Number)
+  .sort((a, b) => (side === 'BUY' ? a - b : b - a));
+
+for (const levelPrice of prices) {
+  if (remainingQty <= 0) break;
+
+  // stop if price is worse than limit
+  if (type === 'LIMIT') {
+    if (side === 'BUY' && levelPrice > price) break;
+    if (side === 'SELL' && levelPrice < price) break;
+  }
+
+  const level = opposite[levelPrice];
+  if (!level) continue;
+
+  while (level.length > 0 && remainingQty > 0) {
+    const resting = level[0];
+    if (!resting) break;
+
     const fillQty = Math.min(remainingQty, resting.qty);
+    if (fillQty <= 0) break;
 
-    if (fillQty > 0) {
-      fills.push({
-        id: nextFillId++,
-        buyOrderId: side === 'BUY' ? order.id : resting.orderId,
-        sellOrderId: side === 'BUY' ? resting.orderId : order.id,
-        symbol,
-        price,
-        qty: fillQty,
-        ts: Date.now(),
-      });
-    }
+    // fill record
+    fills.push({
+      id: nextFillId++,
+      buyOrderId: side === 'BUY' ? order.id : resting.orderId,
+      sellOrderId: side === 'BUY' ? resting.orderId : order.id,
+      symbol,
+      price: levelPrice,
+      qty: fillQty,
+      ts: Date.now(),
+    });
 
+    // update quantities
     order.filledQty += fillQty;
     resting.qty -= fillQty;
     remainingQty -= fillQty;
 
-    const tradeValue = fillQty * price;
+    // also update the resting order inside ORDERS array
+    const restingOrder = ORDERS.find((o) => o.id === resting.orderId);
+    if (restingOrder) restingOrder.filledQty += fillQty;
+
+    const tradeValue = fillQty * levelPrice;
 
     if (side === 'BUY') {
       bal.INR.locked -= tradeValue;
@@ -234,9 +257,7 @@ app.post('/order', (req: { body: OrderRequestInput }, res) => {
       const seller = BALANCES[resting.userId];
       if (seller) {
         seller.INR.available += tradeValue;
-        if (seller[symbol]) {
-          seller[symbol].locked -= fillQty;
-        }
+        if (seller[symbol]) seller[symbol].locked -= fillQty;
       }
     } else {
       if (bal[symbol]) bal[symbol].locked -= fillQty;
@@ -252,11 +273,14 @@ app.post('/order', (req: { body: OrderRequestInput }, res) => {
 
     if (resting.qty <= 0) {
       level.shift();
-      if (level.length === 0) {
-        delete opposite[price];
-      }
     }
   }
+
+  if (level.length === 0) {
+    delete opposite[levelPrice];
+  }
+}
+
 
   if (remainingQty > 0 && type === 'LIMIT') {
     const myside =
@@ -310,6 +334,10 @@ app.get('/orders', (req, res) => {
   res.json(ORDERS);
 });
 
+
+
+
+
 // --- Market data ---
 app.get('/orderbook/:symbol', (req, res) => {
   // return aggregated depth — totalQty per price level for bids and asks
@@ -336,3 +364,7 @@ app.get('/balance', (req, res) => {
 app.listen(3000, () => {
   console.log('Server is running on port 3000');
 });
+
+
+
+
