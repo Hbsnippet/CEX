@@ -99,22 +99,39 @@ const ORDERBOOK: Record<StockSymbol, OrderBook> = {
 let nextOrderId = 1;
 let nextFillId = 1;
 
-const seedOrder: Order = {
+// after let nextOrderId = 1; nextFillId = 1;
+
+// seed 1
+const o1: Order = {
   id: nextOrderId++,
   userId: 2,
   side: 'SELL',
   type: 'LIMIT',
   symbol: 'AXIS',
   price: 1500,
-  qty: 10,
+  qty: 4,
   filledQty: 0,
   status: 'OPEN',
   createdAt: Date.now(),
 };
-ORDERS.push(seedOrder);
-ORDERBOOK.AXIS.asks[1500] = [
-  { orderId: seedOrder.id, userId: seedOrder.userId, qty: seedOrder.qty },
-];
+ORDERS.push(o1);
+ORDERBOOK.AXIS.asks[1500] = [{ orderId: o1.id, userId: 2, qty: 4 }];
+
+// seed 2
+const o2: Order = {
+  id: nextOrderId++,
+  userId: 2,
+  side: 'SELL',
+  type: 'LIMIT',
+  symbol: 'AXIS',
+  price: 1510,
+  qty: 6,
+  filledQty: 0,
+  status: 'OPEN',
+  createdAt: Date.now(),
+};
+ORDERS.push(o2);
+ORDERBOOK.AXIS.asks[1510] = [{ orderId: o2.id, userId: 2, qty: 6 }];
 
 // --- Auth ---
 app.post('/signup', (req, res) => {
@@ -200,87 +217,86 @@ app.post('/order', (req: { body: OrderRequestInput }, res) => {
 
   // Matching logic would be here
 
-const opposite =
-  side === 'BUY' ? ORDERBOOK[symbol].asks : ORDERBOOK[symbol].bids;
+  const opposite =
+    side === 'BUY' ? ORDERBOOK[symbol].asks : ORDERBOOK[symbol].bids;
 
-// sort prices: lowest first for BUY, highest first for SELL
-const prices = Object.keys(opposite)
-  .map(Number)
-  .sort((a, b) => (side === 'BUY' ? a - b : b - a));
+  // sort prices: lowest first for BUY, highest first for SELL
+  const prices = Object.keys(opposite)
+    .map(Number)
+    .sort((a, b) => (side === 'BUY' ? a - b : b - a));
 
-for (const levelPrice of prices) {
-  if (remainingQty <= 0) break;
+  for (const levelPrice of prices) {
+    if (remainingQty <= 0) break;
 
-  // stop if price is worse than limit
-  if (type === 'LIMIT') {
-    if (side === 'BUY' && levelPrice > price) break;
-    if (side === 'SELL' && levelPrice < price) break;
-  }
+    // stop if price is worse than limit
+    if (type === 'LIMIT') {
+      if (side === 'BUY' && levelPrice > price) break;
+      if (side === 'SELL' && levelPrice < price) break;
+    }
 
-  const level = opposite[levelPrice];
-  if (!level) continue;
+    const level = opposite[levelPrice];
+    if (!level) continue;
 
-  while (level.length > 0 && remainingQty > 0) {
-    const resting = level[0];
-    if (!resting) break;
+    while (level.length > 0 && remainingQty > 0) {
+      const resting = level[0];
+      if (!resting) break;
 
-    const fillQty = Math.min(remainingQty, resting.qty);
-    if (fillQty <= 0) break;
+      const fillQty = Math.min(remainingQty, resting.qty);
+      if (fillQty <= 0) break;
 
-    // fill record
-    fills.push({
-      id: nextFillId++,
-      buyOrderId: side === 'BUY' ? order.id : resting.orderId,
-      sellOrderId: side === 'BUY' ? resting.orderId : order.id,
-      symbol,
-      price: levelPrice,
-      qty: fillQty,
-      ts: Date.now(),
-    });
+      // fill record
+      fills.push({
+        id: nextFillId++,
+        buyOrderId: side === 'BUY' ? order.id : resting.orderId,
+        sellOrderId: side === 'BUY' ? resting.orderId : order.id,
+        symbol,
+        price: levelPrice,
+        qty: fillQty,
+        ts: Date.now(),
+      });
 
-    // update quantities
-    order.filledQty += fillQty;
-    resting.qty -= fillQty;
-    remainingQty -= fillQty;
+      // update quantities
+      order.filledQty += fillQty;
+      resting.qty -= fillQty;
+      remainingQty -= fillQty;
 
-    // also update the resting order inside ORDERS array
-    const restingOrder = ORDERS.find((o) => o.id === resting.orderId);
-    if (restingOrder) restingOrder.filledQty += fillQty;
+      // also update the resting order inside ORDERS array
+      const restingOrder = ORDERS.find((o) => o.id === resting.orderId);
+      if (restingOrder) restingOrder.filledQty += fillQty;
 
-    const tradeValue = fillQty * levelPrice;
+      const tradeValue = fillQty * levelPrice;
 
-    if (side === 'BUY') {
-      bal.INR.locked -= tradeValue;
-      if (!bal[symbol]) bal[symbol] = { available: 0, locked: 0 };
-      bal[symbol].available += fillQty;
+      if (side === 'BUY') {
+        bal.INR.locked -= tradeValue;
+        if (!bal[symbol]) bal[symbol] = { available: 0, locked: 0 };
+        bal[symbol].available += fillQty;
 
-      const seller = BALANCES[resting.userId];
-      if (seller) {
-        seller.INR.available += tradeValue;
-        if (seller[symbol]) seller[symbol].locked -= fillQty;
+        const seller = BALANCES[resting.userId];
+        if (seller) {
+          seller.INR.available += tradeValue;
+          if (seller[symbol]) seller[symbol].locked -= fillQty;
+        }
+      } else {
+        if (bal[symbol]) bal[symbol].locked -= fillQty;
+        bal.INR.available += tradeValue;
+
+        const buyer = BALANCES[resting.userId];
+        if (buyer) {
+          buyer.INR.locked -= tradeValue;
+          if (!buyer[symbol]) buyer[symbol] = { available: 0, locked: 0 };
+          buyer[symbol].available += fillQty;
+        }
       }
-    } else {
-      if (bal[symbol]) bal[symbol].locked -= fillQty;
-      bal.INR.available += tradeValue;
 
-      const buyer = BALANCES[resting.userId];
-      if (buyer) {
-        buyer.INR.locked -= tradeValue;
-        if (!buyer[symbol]) buyer[symbol] = { available: 0, locked: 0 };
-        buyer[symbol].available += fillQty;
+      if (resting.qty <= 0) {
+        level.shift();
       }
     }
 
-    if (resting.qty <= 0) {
-      level.shift();
+    if (level.length === 0) {
+      delete opposite[levelPrice];
     }
   }
-
-  if (level.length === 0) {
-    delete opposite[levelPrice];
-  }
-}
-
 
   if (remainingQty > 0 && type === 'LIMIT') {
     const myside =
@@ -334,10 +350,6 @@ app.get('/orders', (req, res) => {
   res.json(ORDERS);
 });
 
-
-
-
-
 // --- Market data ---
 app.get('/orderbook/:symbol', (req, res) => {
   // return aggregated depth — totalQty per price level for bids and asks
@@ -364,7 +376,3 @@ app.get('/balance', (req, res) => {
 app.listen(3000, () => {
   console.log('Server is running on port 3000');
 });
-
-
-
-
