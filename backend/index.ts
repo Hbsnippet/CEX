@@ -1,5 +1,7 @@
 import express from 'express';
 import { createClient } from 'redis';
+import { untilWeGotBack, queue_id } from './poller_queue';
+
 const app = express();
 app.use(express.json());
 
@@ -19,6 +21,8 @@ app.post('/order', async (req, res) => {
     return res.status(400).json({ error: 'price required for LIMIT' });
   }
 
+  const identifier = Math.random().toString(36).substring(2, 15);
+
   await redis.lPush(
     'incoming-orders',
     JSON.stringify({
@@ -28,10 +32,14 @@ app.post('/order', async (req, res) => {
       type,
       symbol,
       price,
+      identifier,
+      queue_id,
     })
   );
 
-  res.json({ status: 'queued' });
+  const returnedData = await untilWeGotBack(identifier);
+
+  res.json({ status: 'queued', filledQty: returnedData.filledQty });
 });
 
 // body: OrderRequestInput
@@ -49,19 +57,19 @@ app.delete('/order/:orderId', (req, res) => {
   // 4. mark status = CANCELLED
 });
 
-app.get('/orders', (req, res) => {
-  // query: ?status=OPEN&userId=1  (or all)
-  // return current user's orders — filter ORDERS, then res.json(...)
-  res.json(ORDERS);
-});
+// app.get('/orders', (req, res) => {
+//   // query: ?status=OPEN&userId=1  (or all)
+//   // return current user's orders — filter ORDERS, then res.json(...)
+//   res.json(ORDERS);
+// });
 
 // --- Market data ---
-app.get('/orderbook/:symbol', (req, res) => {
-  // return aggregated depth — totalQty per price level for bids and asks
-  // (don't expose individual userIds to other users)
-  const symbol = req.params.symbol as StockSymbol;
-  res.json(ORDERBOOK[symbol] ?? {});
-});
+// app.get('/orderbook/:symbol', (req, res) => {
+//   // return aggregated depth — totalQty per price level for bids and asks
+//   // (don't expose individual userIds to other users)
+//   const symbol = req.params.symbol as StockSymbol;
+//   res.json(ORDERBOOK[symbol] ?? {});
+// });
 
 app.get('/fills/:symbol', (req, res) => {
   // recent trades for this stock — the "tape"
@@ -72,11 +80,11 @@ app.get('/stocks', (req, res) => {
 });
 
 // --- User data ---
-app.get('/balance', (req, res) => {
-  // return BALANCES[userId] for the authed user
-  const userId = Number(req.query.userId);
-  res.json(BALANCES[userId] ?? { error: 'no user' });
-});
+// app.get('/balance', (req, res) => {
+//   // return BALANCES[userId] for the authed user
+//   const userId = Number(req.query.userId);
+//   res.json(BALANCES[userId] ?? { error: 'no user' });
+// });
 
 app.listen(3000, () => {
   console.log('Server is running on port 3000');

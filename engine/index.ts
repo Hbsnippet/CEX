@@ -3,6 +3,9 @@ import { createClient } from 'redis';
 const redis = createClient({ url: 'redis://localhost:6379' });
 await redis.connect();
 
+const PublisherClient = createClient({ url: 'redis://localhost:6379' });
+await PublisherClient.connect();
+
 console.log('Engine listening...');
 
 type StockSymbol = 'AXIS' | 'HDFC' | 'TATA';
@@ -47,14 +50,6 @@ type Fill = {
 
 // What the client actually sends — untrusted, so everything optional.
 // Validate it, THEN construct a real `Order`.
-type OrderRequestInput = {
-  userId: number;
-  side?: string;
-  type?: string;
-  symbol?: string;
-  price?: number;
-  qty?: number;
-};
 
 // ============================================================
 // DATA
@@ -106,13 +101,13 @@ const o1: Order = {
   type: 'LIMIT',
   symbol: 'AXIS',
   price: 1500,
-  qty: 4,
+  qty: 100,
   filledQty: 0,
   status: 'OPEN',
   createdAt: Date.now(),
 };
 ORDERS.push(o1);
-ORDERBOOK.AXIS.asks[1500] = [{ orderId: o1.id, userId: 2, qty: 4 }];
+ORDERBOOK.AXIS.asks[1500] = [{ orderId: o1.id, userId: 2, qty: 100 }];
 
 // seed 2
 const o2: Order = {
@@ -122,13 +117,13 @@ const o2: Order = {
   type: 'LIMIT',
   symbol: 'AXIS',
   price: 1510,
-  qty: 6,
+  qty: 100,
   filledQty: 0,
   status: 'OPEN',
   createdAt: Date.now(),
 };
 ORDERS.push(o2);
-ORDERBOOK.AXIS.asks[1510] = [{ orderId: o2.id, userId: 2, qty: 6 }];
+ORDERBOOK.AXIS.asks[1510] = [{ orderId: o2.id, userId: 2, qty: 100 }];
 
 while (true) {
   const result = await redis.brPop('incoming-orders', 0);
@@ -286,6 +281,18 @@ while (true) {
 
   if (order.filledQty === order.qty) order.status = 'FILLED';
   else if (order.filledQty > 0) order.status = 'PARTIAL';
+
+  await PublisherClient.lPush(
+    'response-queue' + raw.queue_id,
+    JSON.stringify({
+      identifier: raw.identifier,
+      queue_id: raw.queue_id,
+      orderId: order.id,
+      filledQty: order.filledQty,
+      status: order.status,
+      fills,
+    })
+  );
 
   console.log('Processed', {
     orderId: order.id,
